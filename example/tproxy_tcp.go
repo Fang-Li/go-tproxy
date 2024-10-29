@@ -52,6 +52,13 @@ func ListenTCP(network string, laddr *net.TCPAddr) (net.Listener, error) {
 	if err = syscall.SetsockoptInt(int(fileDescriptorSource.Fd()), syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
 		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: laddr, Err: fmt.Errorf("set socket option: IP_TRANSPARENT: %s", err)}
 	}
+
+	val, getErr := syscall.GetsockoptInt(int(fileDescriptorSource.Fd()), syscall.SOL_IP, syscall.IP_TRANSPARENT)
+	if getErr != nil {
+		log.Fatal(getErr)
+	}
+	log.Printf("value of IP_TRANSPARENT option is: %d", val)
+
 	return &Listener{listener}, nil
 }
 
@@ -70,10 +77,17 @@ func (conn *Conn) DialOriginalDestination(dontAssumeRemote bool) (*net.TCPConn, 
 		return nil, &net.OpError{Op: "dial", Err: fmt.Errorf("build local socket address: %s", err)}
 	}
 
-	log.Println("connect to", conn.LocalAddr().(*net.TCPAddr), "from", conn.RemoteAddr().String())
+	log.Println("connect from", conn.RemoteAddr(), "to", conn.LocalAddr())
+	
 	fileDescriptor, err := syscall.Socket(tcpAddrFamily("tcp", conn.LocalAddr().(*net.TCPAddr), conn.RemoteAddr().(*net.TCPAddr)), syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Err: fmt.Errorf("socket open: %s", err)}
+	}
+
+	// Set SO_MARK to apply the desired mark to the socket
+	if err = syscall.SetsockoptInt(fileDescriptor, syscall.SOL_SOCKET, syscall.SO_MARK, 123); err != nil {
+		syscall.Close(fileDescriptor)
+		return nil, &net.OpError{Op: "dial", Err: fmt.Errorf("set socket option: SO_MARK: %s", err)}
 	}
 
 	if err = syscall.SetsockoptInt(fileDescriptor, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
