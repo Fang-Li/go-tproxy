@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -53,6 +52,10 @@ func ListenTCP(network string, laddr *net.TCPAddr) (net.Listener, error) {
 		return nil, &net.OpError{Op: "listen", Net: network, Source: nil, Addr: laddr, Err: fmt.Errorf("set socket option: IP_TRANSPARENT: %s", err)}
 	}
 
+	if err = syscall.SetsockoptInt(int(fileDescriptorSource.Fd()), syscall.SOL_SOCKET, syscall.SO_MARK, 123); err != nil {
+		return nil, &net.OpError{Op: "dial", Err: fmt.Errorf("set socket option: SO_MARK: %s", err)}
+	}
+
 	val, getErr := syscall.GetsockoptInt(int(fileDescriptorSource.Fd()), syscall.SOL_IP, syscall.IP_TRANSPARENT)
 	if getErr != nil {
 		log.Fatal(getErr)
@@ -78,7 +81,7 @@ func (conn *Conn) DialOriginalDestination(dontAssumeRemote bool) (*net.TCPConn, 
 	}
 
 	log.Println("connect from", conn.RemoteAddr(), "to", conn.LocalAddr())
-	
+
 	fileDescriptor, err := syscall.Socket(tcpAddrFamily("tcp", conn.LocalAddr().(*net.TCPAddr), conn.RemoteAddr().(*net.TCPAddr)), syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
 		return nil, &net.OpError{Op: "dial", Err: fmt.Errorf("socket open: %s", err)}
@@ -104,7 +107,7 @@ func (conn *Conn) DialOriginalDestination(dontAssumeRemote bool) (*net.TCPConn, 
 		syscall.Close(fileDescriptor)
 		return nil, &net.OpError{Op: "dial", Err: fmt.Errorf("set socket option: SO_NONBLOCK: %s", err)}
 	}
-
+	localSocketAddress.Port = 0
 	if !dontAssumeRemote {
 		if err = syscall.Bind(fileDescriptor, localSocketAddress); err != nil {
 			syscall.Close(fileDescriptor)
@@ -131,21 +134,14 @@ func (conn *Conn) DialOriginalDestination(dontAssumeRemote bool) (*net.TCPConn, 
 	return remoteConn.(*net.TCPConn), nil
 }
 
-func tcpAddrToSocketAddr(addr *net.TCPAddr) (syscall.Sockaddr, error) {
+func tcpAddrToSocketAddr(addr *net.TCPAddr) (*syscall.SockaddrInet4, error) {
 	switch {
 	case addr.IP.To4() != nil:
 		ip := [4]byte{}
 		copy(ip[:], addr.IP.To4())
 		return &syscall.SockaddrInet4{Addr: ip, Port: addr.Port}, nil
-	default:
-		ip := [16]byte{}
-		copy(ip[:], addr.IP.To16())
-		zoneID, err := strconv.ParseUint(addr.Zone, 10, 32)
-		if err != nil {
-			return nil, err
-		}
-		return &syscall.SockaddrInet6{Addr: ip, Port: addr.Port, ZoneId: uint32(zoneID)}, nil
 	}
+	return nil, fmt.Errorf("unsupported IP address type: %T", addr.IP)
 }
 
 func tcpAddrFamily(net string, laddr, raddr *net.TCPAddr) int {
